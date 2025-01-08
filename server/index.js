@@ -51,6 +51,7 @@ async function run() {
     const db = client.db('plantDB')
     const usersCollection = db.collection('users');
     const plantsCollection = db.collection('plants');
+    const ordersCollection = db.collection('orders')
 
     //save or update a user in db
     //here we are using email because the we need to check if the user already is in database.
@@ -103,6 +104,34 @@ async function run() {
       }
     })
 
+
+    // manage user status and role
+    app.patch('/users/:email', verifyToken, async (req, res) => {
+      const email = req.params.email
+      const query = { email }
+      const user = await usersCollection.findOne(query)
+      if (!user || user?.status === 'Requested')
+        return res
+          .status(400)
+          .send('You have already requested, wait for some time.')
+
+      const updateDoc = {
+        $set: {
+          status: 'Requested',
+        },
+      }
+      const result = await usersCollection.updateOne(query, updateDoc)
+      console.log(result)
+      res.send(result)
+    })
+
+    // get user role
+    app.get('/users/role/:email', async (req, res) => {
+      const email = req.params.email
+      const result = await usersCollection.findOne({ email })
+      res.send({ role: result?.role })
+    })
+
     //save a plant data in db
     app.post('/plants', verifyToken, async (req, res) => {
       const plant = req.body;
@@ -116,6 +145,112 @@ async function run() {
       const result = await plantsCollection.find().limit(20).toArray();
       res.send(result)
     })
+
+    // get a plant by id
+    app.get('/plants/:id', async (req, res) => {
+      const id = req.params.id
+      const query = { _id: new ObjectId(id) }
+      const result = await plantsCollection.findOne(query)
+      res.send(result)
+    })
+
+    // Save order data in db
+    app.post('/order', verifyToken, async (req, res) => {
+      const orderInfo = req.body
+      console.log(orderInfo)
+      const result = await ordersCollection.insertOne(orderInfo)
+      /*  // Send Email
+       if (result?.insertedId) {
+         // To Customer
+         sendEmail(orderInfo?.customer?.email, {
+           subject: 'Order Successful',
+           message: `You've placed an order successfully. Transaction Id: ${result?.insertedId}`,
+         })
+ 
+         // To Seller
+         sendEmail(orderInfo?.seller, {
+           subject: 'Hurray!, You have an order to process.',
+           message: `Get the plants ready for ${orderInfo?.customer?.name}`,
+         })
+       } */
+      res.send(result)
+    })
+
+    // Manage plant quantity
+    app.patch('/plants/quantity/:id', verifyToken, async (req, res) => {
+      const id = req.params.id
+      const { quantityToUpdate, status } = req.body
+      const filter = { _id: new ObjectId(id) }
+      let updateDoc = {
+        $inc: { quantity: -quantityToUpdate },
+      }
+      if (status === 'increase') {
+        updateDoc = {
+          $inc: { quantity: quantityToUpdate },
+        }
+      }
+      const result = await plantsCollection.updateOne(filter, updateDoc)
+      res.send(result)
+    })
+
+    // get all orders for a specific customer
+    app.get('/customer-orders/:email', verifyToken, async (req, res) => {
+      const email = req.params.email;
+      const query = { 'customer.email': email }
+      // const result = await ordersCollection.find(query).toArray();
+      const result = await ordersCollection
+        .aggregate([
+          {
+            $match: { 'customer.email': email }, //Match specific customers data only by email
+          },
+          {
+            $addFields: {
+              plantId: { $toObjectId: '$plantId' }, //convert plantId string field to objectId field
+            },
+          },
+          {
+            $lookup: {
+              // go to a different collection and look for data
+              from: 'plants', // collection name
+              localField: 'plantId', // local data that you want to match
+              foreignField: '_id', // foreign field name of that same data
+              as: 'plants', // return the data as plants array (array naming)
+            },
+          },
+          { $unwind: '$plants' }, // unwind lookup result, return without array
+          {
+            $addFields: {
+              // add these fields in order object
+              name: '$plants.name',
+              image: '$plants.image',
+              category: '$plants.category',
+            },
+          },
+          {
+            // remove plants object property from order object
+            $project: {
+              plants: 0,
+            },
+          },
+        ])
+        .toArray()
+
+      res.send(result)
+    })
+
+    // Cancel/delete an order
+    app.delete('/orders/:id', verifyToken, async (req, res) => {
+      const id = req.params.id
+      const query = { _id: new ObjectId(id) }
+      const order = await ordersCollection.findOne(query)
+      if (order.status === 'Delivered')
+        return res
+          .status(409)
+          .send('Cannot cancel once the product is delivered!')
+      const result = await ordersCollection.deleteOne(query)
+      res.send(result)
+    })
+
 
 
     // Send a ping to confirm a successful connection
